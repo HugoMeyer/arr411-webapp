@@ -1,0 +1,153 @@
+# Arr411 Web : qBittorrent, Radarr, Sonarr et Lidarr dans le navigateur, avec la vue C411 intégrée.
+# Version « images prêtes à l'emploi » : elle télécharge les images publiées au lieu de les construire.
+#
+# Rien à cloner. Dans un dossier vide, enregistre ce fichier sous le nom docker-compose.yml, puis :
+#
+#   docker compose up -d
+#   docker compose logs arr411  (mot de passe administrateur du premier démarrage)
+#
+# Les réglages (adresse publique, vue C411, etc.) se mettent dans un fichier .env à côté de celui-ci ;
+# le modèle commenté est le fichier .env.example, à la racine du dépôt du projet.
+# Mise à jour : docker compose pull && docker compose up -d
+# Si tu publies toi-même les images, remplace « hugomeyer » par ton compte GitHub, en minuscules.
+#
+# C'est le docker-compose.yml du dépôt, avec « image: » à la place de « build: » : un test vérifie qu'ils ne divergent pas.
+#
+# La vue C411 s'appuie sur deux conteneurs de plus : « browser » (le navigateur qui affiche c411.org) et
+# « egress » (sa seule sortie vers Internet, limitée à c411.org). Aucun des deux ne publie de port.
+# Sans la vue C411 : C411_BROWSER_URL vide dans .env, puis « docker compose up -d arr411 ».
+#
+# Avec HTTPS automatique (Caddy) : renseigne DOMAIN, PUBLIC_URL, TRUST_PROXY=1 et BIND_ADDRESS=127.0.0.1 dans .env, puis
+#   docker compose --profile https up -d
+name: arr411
+
+services:
+  arr411:
+    image: ghcr.io/hugomeyer/arr411-web:latest
+    container_name: arr411
+    restart: unless-stopped
+    # BIND_ADDRESS=127.0.0.1 : le port n'est joignable que depuis cette machine (derrière un reverse proxy, Caddy compris).
+    ports:
+      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-3000}:3000"
+    environment:
+      ADMIN_USER: ${ADMIN_USER:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+      COOKIE_SECURE: ${COOKIE_SECURE:-auto}
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      SESSION_DAYS: ${SESSION_DAYS:-7}
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      RADARR_URL: ${RADARR_URL:-}
+      RADARR_API_KEY: ${RADARR_API_KEY:-}
+      SONARR_URL: ${SONARR_URL:-}
+      SONARR_API_KEY: ${SONARR_API_KEY:-}
+      LIDARR_URL: ${LIDARR_URL:-}
+      LIDARR_API_KEY: ${LIDARR_API_KEY:-}
+      INSECURE_UPSTREAM_TLS: ${INSECURE_UPSTREAM_TLS:-false}
+      ALLOW_SEARCH_COMMANDS: ${ALLOW_SEARCH_COMMANDS:-false}
+      LOG_REQUESTS: ${LOG_REQUESTS:-false}
+      MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-25}
+      C411_BROWSER_URL: ${C411_BROWSER_URL-http://browser:9223}
+      C411_MAX_SESSIONS: ${C411_MAX_SESSIONS:-3}
+      C411_IDLE_MINUTES: ${C411_IDLE_MINUTES:-15}
+      C411_PERSIST_COOKIES: ${C411_PERSIST_COOKIES:-true}
+      C411_ALLOWED_HOSTS: ${C411_ALLOWED_HOSTS:-}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - arr411-data:/data
+    networks:
+      - default
+      - c411-control
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  # Chromium sur un écran virtuel, piloté par arr411 (DevTools, sans authentification : jamais de port publié).
+  # Aucune route directe vers Internet : il ne parle qu'à arr411 (qui le pilote) et au proxy « egress ». Aucun secret.
+  browser:
+    image: ghcr.io/hugomeyer/arr411-browser:latest
+    container_name: arr411-browser
+    restart: unless-stopped
+    environment:
+      EGRESS_PROXY: http://egress:3128
+      BROWSER_HEADLESS: ${BROWSER_HEADLESS:-0}
+      TZ: ${TZ:-Europe/Paris}
+    networks:
+      - c411-control
+      - c411-egress
+    depends_on:
+      egress:
+        condition: service_healthy
+    shm_size: 1gb
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    pids_limit: 2048
+
+  # Seule sortie du navigateur : tunnels HTTPS (port 443) vers c411.org et la vérification Cloudflare, rien d'autre.
+  # Même image que arr411, mais sans volume ni secret.
+  egress:
+    image: ghcr.io/hugomeyer/arr411-web:latest
+    container_name: arr411-egress
+    restart: unless-stopped
+    command: ["node", "server/egress.js"]
+    environment:
+      C411_ALLOWED_HOSTS: ${C411_ALLOWED_HOSTS:-}
+    networks:
+      - default
+      - c411-egress
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('node:net').connect(3128,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    pids_limit: 128
+
+  caddy:
+    image: caddy:2-alpine
+    profiles: ["https"]
+    restart: unless-stopped
+    command: caddy reverse-proxy --from ${DOMAIN:-localhost} --to arr411:3000
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - arr411
+
+volumes:
+  arr411-data:
+  caddy-data:
+  caddy-config:
+
+# Réseaux sans accès à Internet. Le navigateur est le seul à toucher les deux :
+# c411-control relie arr411 (qui le pilote) au navigateur ; c411-egress relie le navigateur au proxy de sortie.
+# Le navigateur n'a donc aucune route directe vers Internet. Le port DevTools (9223) n'est publié nulle part,
+# mais les conteneurs de ces deux réseaux (arr411 et le proxy, tous deux du code de ce dépôt) peuvent l'atteindre.
+networks:
+  c411-control:
+    internal: true
+  c411-egress:
+    internal: true

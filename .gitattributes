@@ -1,0 +1,5 @@
+# Fins de ligne LF dans le dépôt et dans l'image Docker, quel que soit le système de l'auteur.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary

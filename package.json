@@ -1,0 +1,14 @@
+{
+  "name": "arr411-web",
+  "version": "1.0.0",
+  "description": "Arr411 Web — qBittorrent, Radarr, Sonarr et Lidarr dans le navigateur, avec connexion par formulaire réservée à certains utilisateurs.",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test test/*.test.js"
+  }
+}
