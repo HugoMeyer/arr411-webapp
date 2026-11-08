@@ -14,7 +14,7 @@ Le compose démarre trois conteneurs, plus un quatrième si tu le demandes :
 
 | Conteneur | Rôle | Port publié |
 | --- | --- | --- |
-| `arr411` | L'application : interface, comptes, accès à tes services | `HOST_PORT` (3000) |
+| `arr411` | L'application : interface, comptes, accès à tes services | `HOST_PORT` (3131) |
 | `browser` | Chromium sur un écran virtuel : il affiche c411.org dans la vue C411 | aucun |
 | `egress` | Seule sortie du navigateur : tunnels HTTPS vers c411.org, rien d'autre | aucun |
 | `caddy` | HTTPS automatique (facultatif, profil `https`) | 80 et 443 |
@@ -32,7 +32,7 @@ docker compose logs arr411    # mot de passe de l'administrateur (affiché une s
 La première construction télécharge Chromium (l'image `browser`) : compte quelques minutes.
 `docker compose ps` affiche `healthy` pour chaque conteneur quand tout répond (contrôles de santé intégrés).
 
-Ouvre <http://localhost:3000> (ou l'adresse de ta machine) et connecte-toi avec le compte `admin`.
+Ouvre <http://localhost:3131> (ou l'adresse de ta machine) et connecte-toi avec le compte `admin`.
 Puis, dans **Réglages**, change le mot de passe et renseigne les adresses de tes services.
 
 Pour choisir toi-même le mot de passe du premier compte, mets `ADMIN_USER` et `ADMIN_PASSWORD` dans `.env` **avant** le premier démarrage.
@@ -170,7 +170,7 @@ BIND_ADDRESS=127.0.0.1              # le port de l'application n'est plus joigna
 
 `TRUST_PROXY` autorise l'application à lire `X-Forwarded-For`, `X-Forwarded-Proto` et `X-Forwarded-Host` (adresse réelle des clients, cookie `Secure`, vérification de l'origine). Ne l'active que si un proxy de confiance est bien devant : sinon n'importe qui peut falsifier ces en-têtes.
 
-`BIND_ADDRESS=127.0.0.1` en est le complément : le proxy, sur la même machine, devient le seul à joindre le port de l'application. Sans lui, quelqu'un qui atteint directement `http://ta-machine:3000` contourne le proxy et le HTTPS, et peut écrire l'adresse de son choix dans `X-Forwarded-For` : les limites de tentatives de connexion par adresse (5 et 10 échecs) ne le retiennent plus ; celle par compte (30 échecs sur 15 minutes) reste en vigueur. Le Caddy intégré joint l'application par le réseau Docker, pas par ce port : il n'est pas concerné. Si ton proxy est dans un autre conteneur ou sur une autre machine, garde `0.0.0.0` et limite l'accès au port avec un pare-feu.
+`BIND_ADDRESS=127.0.0.1` en est le complément : le proxy, sur la même machine, devient le seul à joindre le port de l'application. Sans lui, quelqu'un qui atteint directement `http://ta-machine:3131` contourne le proxy et le HTTPS, et peut écrire l'adresse de son choix dans `X-Forwarded-For` : les limites de tentatives de connexion par adresse (5 et 10 échecs) ne le retiennent plus ; celle par compte (30 échecs sur 15 minutes) reste en vigueur. Le Caddy intégré joint l'application par le réseau Docker, pas par ce port : il n'est pas concerné. Si ton proxy est dans un autre conteneur ou sur une autre machine, garde `0.0.0.0` et limite l'accès au port avec un pare-feu.
 
 **Caddy intégré** (certificat Let's Encrypt automatique, ports 80 et 443 libres, domaine qui pointe vers ta machine) :
 
@@ -198,7 +198,7 @@ server {
   client_max_body_size 25m;
 
   location / {
-    proxy_pass http://127.0.0.1:3000;
+    proxy_pass http://127.0.0.1:3131;     # HOST_PORT
     proxy_http_version 1.1;
     proxy_set_header Host $host;
     proxy_set_header X-Forwarded-For $remote_addr;
@@ -218,7 +218,7 @@ Toutes sont facultatives et se mettent dans `.env`.
 
 | Variable | Défaut | Rôle |
 | --- | --- | --- |
-| `HOST_PORT` | `3000` | Port publié sur la machine hôte. |
+| `HOST_PORT` | `3131` | Port publié sur la machine hôte. |
 | `BIND_ADDRESS` | `0.0.0.0` | Interface sur laquelle ce port est publié : `127.0.0.1` = cette machine seulement (derrière un reverse proxy). |
 | `ADMIN_USER`, `ADMIN_PASSWORD` | `admin`, généré | Compte créé au tout premier démarrage (liste de comptes vide), jamais réappliqué ensuite. |
 | `PUBLIC_URL` | — | Adresse publique. Indispensable derrière un proxy qui change l'en-tête `Host`. |
@@ -240,7 +240,7 @@ Toutes sont facultatives et se mettent dans `.env`.
 | `TZ` | `Europe/Paris` | Fuseau horaire du navigateur. |
 | `BROWSER_HEADLESS` | `0` | `1` : Chromium sans écran virtuel (repli). |
 
-L'image utilise aussi `PORT` (3000), `HOST` (0.0.0.0) et `DATA_DIR` (`/data`) : inutile d'y toucher.
+L'image utilise aussi `PORT` (3000, le port interne du conteneur : celui que tu ouvres est `HOST_PORT`), `HOST` (0.0.0.0) et `DATA_DIR` (`/data`) : inutile d'y toucher.
 
 Dans `.env`, une valeur qui contient `$`, `#` ou des espaces se met entre apostrophes : `ADMIN_PASSWORD='pa$word #1'` est lu tel quel. Sans apostrophes, un `$` s'écrit `$$`.
 

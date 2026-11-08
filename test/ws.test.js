@@ -492,9 +492,15 @@ test('an exception in a message handler closes the connection instead of crashin
   });
 });
 
-test('the rate bucket allows a burst and then refills', async () => {
+test('the rate bucket allows a burst and then refills', (t) => {
+  // Frozen clock: at 1000 tokens per second, the real one lets the fourth take pass whenever the calls straddle a millisecond.
+  let now = 1_000_000;
+  t.mock.method(Date, 'now', () => now);
   const b = new ws.Bucket(3, 1000);
   assert.deepEqual([b.take(), b.take(), b.take(), b.take()], [true, true, true, false]);
-  await sleep(20);
-  assert.equal(b.take(), true);
+  now += 1;
+  assert.equal(b.take(), true, 'one token per millisecond');
+  assert.equal(b.take(), false);
+  now += 60_000;
+  assert.deepEqual([b.take(), b.take(), b.take(), b.take()], [true, true, true, false], 'never more than its capacity');
 });

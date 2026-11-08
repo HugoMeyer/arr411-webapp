@@ -29,7 +29,7 @@ services:
     restart: unless-stopped
     # BIND_ADDRESS=127.0.0.1 : le port n'est joignable que depuis cette machine (derrière un reverse proxy, Caddy compris).
     ports:
-      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-3000}:3000"
+      - "${BIND_ADDRESS:-0.0.0.0}:${HOST_PORT:-3131}:3000"
     environment:
       ADMIN_USER: ${ADMIN_USER:-admin}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
