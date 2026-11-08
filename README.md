@@ -262,7 +262,7 @@ Protège cette sauvegarde, elle contient les clés de tes services et les connex
 
 Un dossier local à la place du volume nommé : remplace `arr411-data:/data` par `./data:/data` dans le compose, puis `mkdir data && sudo chown 1000:1000 data`.
 
-Mise à jour : `git pull` (ou nouveaux fichiers), puis `docker compose up -d --build`. Les données sont conservées. Avec les images publiées (voir plus bas) : `docker compose pull`, puis `docker compose up -d`.
+Mise à jour : `git pull` (ou nouveaux fichiers), puis `docker compose up -d --build`. Les données sont conservées. Avec les images publiées (voir plus bas) : `docker compose pull`, puis `docker compose up -d`. Chaque push sur `main` republie `:latest` ; pour pouvoir revenir en arrière, remplace `:latest` dans le compose par une étiquette précise : `:sha-` suivi des 7 premiers caractères du commit, ou `:1.2.0` pour un tag Git `v1.2.0`.
 
 ## Partager le docker-compose
 
@@ -283,6 +283,18 @@ Les images sont `ghcr.io/hugomeyer/arr411-web:latest` (l'application, et le prox
 
 - Les deux paquets doivent être **publics** (GitHub > Packages > Paramètres du paquet > Visibilité) pour que les autres les téléchargent sans compte.
 - Si tu publies avec un autre compte GitHub, remplace `hugomeyer` (en minuscules) dans `docker-compose.ghcr.yml`.
+
+### Aussi sur Docker Hub (facultatif)
+
+Le même workflow publie les deux images sur Docker Hub (`<identifiant>/arr411-web` et `<identifiant>/arr411-browser`, avec les mêmes étiquettes) quand le dépôt GitHub a, dans **Settings > Secrets and variables > Actions** :
+
+| Onglet | Nom | Valeur |
+| --- | --- | --- |
+| Variables | `DOCKERHUB_USERNAME` | ton identifiant Docker Hub |
+| Secrets | `DOCKERHUB_TOKEN` | un jeton d'accès créé dans Docker Hub (Account settings > Personal access tokens), droits « Read & Write » |
+
+Crée d'abord les deux dépôts sur Docker Hub (`arr411-web` et `arr411-browser`), publics pour que d'autres les téléchargent sans compte. Sans la variable et le secret, rien ne change : seul GHCR est utilisé, et aucune pull request ne publie quoi que ce soit.
+Pour que ton compose télécharge depuis Docker Hub, remplace `ghcr.io/hugomeyer/` par `<identifiant>/` dans ses trois lignes `image:`.
 
 ## Application installable, partage, liens magnet
 

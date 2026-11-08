@@ -10,6 +10,7 @@
 # le modèle commenté est le fichier .env.example, à la racine du dépôt du projet.
 # Mise à jour : docker compose pull && docker compose up -d
 # Si tu publies toi-même les images, remplace « hugomeyer » par ton compte GitHub, en minuscules.
+# Images sur Docker Hub plutôt que sur GHCR : remplace « ghcr.io/hugomeyer/ » par « ton-identifiant/ » dans les lignes image: (voir le README).
 #
 # C'est le docker-compose.yml du dépôt, avec « image: » à la place de « build: » : un test vérifie qu'ils ne divergent pas.
 #

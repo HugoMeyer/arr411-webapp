@@ -219,6 +219,18 @@ test('docker-compose.ghcr.yml : le compose du dépôt, avec les images publiées
   assert.ok(readme.includes('docker-compose.ghcr.yml'), 'README : compose à partager');
 });
 
+test('workflow : Docker Hub est facultatif, et une pull request ne publie rien', () => {
+  const hubLogins = workflow.split(/^ {6}- /m).filter((step) => step.includes('docker/login-action') && !step.includes('registry:'));
+  assert.equal(hubLogins.length, 1, 'une seule connexion à Docker Hub');
+  assert.ok(hubLogins[0].includes("github.event_name != 'pull_request'"), 'pas de connexion à Docker Hub depuis une pull request');
+  assert.ok(hubLogins[0].includes("env.DOCKERHUB_USERNAME != ''"), 'sans identifiant Docker Hub, pas de connexion');
+  assert.ok(hubLogins[0].includes('password: ${{ secrets.DOCKERHUB_TOKEN }}'), 'le jeton Docker Hub vient des secrets');
+  assert.ok(workflow.includes('"${DOCKERHUB_USERNAME,,}/${{ matrix.image }}"'), 'image Docker Hub nommée d\'après la matrice, en minuscules');
+  assert.ok(workflow.includes('images: ${{ env.IMAGES }}'), 'les noms d\'images viennent de l\'étape qui les prépare');
+  assert.ok(/push: \$\{\{ github\.event_name != 'pull_request' \}\}/.test(workflow), 'une pull request construit sans publier');
+  for (const name of ['DOCKERHUB_USERNAME', 'DOCKERHUB_TOKEN']) assert.ok(readme.includes('`' + name + '`'), `README : ${name}`);
+});
+
 test('vue C411 : le navigateur n\'a aucune route vers Internet, seul le proxy de sortie en a une', () => {
   const entrypoint = read('browser', 'entrypoint.sh');
   const browserDockerfile = read('browser', 'Dockerfile');
