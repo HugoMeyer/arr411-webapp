@@ -19,6 +19,8 @@ Le compose démarre trois conteneurs, plus un quatrième si tu le demandes :
 | `egress` | Seule sortie du navigateur : tunnels HTTPS vers c411.org, rien d'autre | aucun |
 | `caddy` | HTTPS automatique (facultatif, profil `https`) | 80 et 443 |
 
+c411.org n'est pas joignable depuis ta connexion (bloqué, ou réservé aux VPN) ? `docker-compose.vpn.yml` ajoute un conteneur `gluetun` (client VPN) par lequel sort la vue C411 : voir [C411 derrière un VPN](#c411-derrière-un-vpn-gluetun).
+
 ## Démarrage rapide
 
 Prérequis : Docker avec Compose v2 (la commande `docker compose`).
@@ -157,6 +159,49 @@ L'onglet C411 devient alors un lanceur : recherche (ouverte dans un nouvel ongle
 - Le stockage local des sites (`localStorage`) n'est pas conservé entre deux sessions : seuls les cookies le sont.
 - La vérification Cloudflare de c411.org peut refuser un Chrome piloté à distance. Arr411 ne la contourne pas : réessaie, ou connecte-toi sur c411.org avec ton navigateur habituel en attendant.
 
+## C411 derrière un VPN (gluetun)
+
+**Quand ?** La vue C411 affiche `ERR_TUNNEL_CONNECTION_FAILED` (ou reste vide) et `docker compose logs egress` montre que c411.org ne répond pas ou que son nom ne se résout pas : ton fournisseur d'accès bloque le site, ou il n'est joignable que depuis un VPN.
+
+**Comment ?** `docker-compose.vpn.yml` est le `docker-compose.ghcr.yml` avec un conteneur de plus, `gluetun` (le client VPN [gluetun](https://github.com/qdm12/gluetun), image `qmcgaw/gluetun`). Enregistre-le sous le nom `docker-compose.yml` dans un dossier vide, comme `docker-compose.ghcr.yml` (depuis le dépôt, ajoute `-f docker-compose.vpn.yml` à chaque commande `docker compose`). Copie `.env.example` en `.env` à côté et remplis sa section « VPN pour la vue C411 », puis :
+
+```bash
+docker compose up -d
+docker compose logs gluetun    # « Public IP address is … » : l'adresse de ton VPN
+```
+
+Même nom de projet et même volume que les autres composes : tes comptes et tes réglages sont conservés. Tu as déjà un gluetun configuré ? Reprends ses valeurs (fournisseur, clé, pays) dans ce `.env` ; fournisseurs et réglages : [wiki de gluetun](https://github.com/qdm12/gluetun-wiki).
+
+| Variable | Défaut | Rôle |
+| --- | --- | --- |
+| `VPN_SERVICE_PROVIDER` | — | Fournisseur : `protonvpn`, `mullvad`, `nordvpn`, `surfshark`, `airvpn`, `custom`… **Obligatoire** : sans elle, `docker compose` refuse de démarrer (gluetun prendrait sinon Private Internet Access). |
+| `VPN_TYPE` | `wireguard` | `wireguard` ou `openvpn`. |
+| `WIREGUARD_PRIVATE_KEY` | — | WireGuard : clé privée de ton fournisseur. **Secret.** |
+| `WIREGUARD_ADDRESSES` | — | WireGuard : adresse du tunnel (par exemple `10.2.0.2/32`), seulement si le fournisseur l'exige. |
+| `OPENVPN_USER`, `OPENVPN_PASSWORD` | — | OpenVPN : identifiant et mot de passe du fournisseur. **Secrets.** |
+| `SERVER_COUNTRIES` | — | Pays des serveurs, séparés par des virgules (`Switzerland,Netherlands`). Vide : au choix du fournisseur. |
+| `WIREGUARD_IMPLEMENTATION` | `auto` | `auto`, `kernelspace` ou `userspace`. |
+| `WIREGUARD_GSO` | — | `off` si `docker compose logs gluetun` montre `Failed to write packets to TUN device … invalid argument` (noyaux de certains NAS). Vide : réglage de gluetun (`on`). |
+
+**Comment ça marche.** `egress`, le proxy par lequel passe le navigateur, partage le réseau de `gluetun` (`network_mode`) : ses connexions et ses résolutions de noms passent par le tunnel. Le navigateur le joint par le nom `gluetun`, sur le réseau `c411-egress`. Le pare-feu de gluetun coupe tout ce qui ne passe pas par le tunnel : si le VPN tombe, rien ne sort. Seule la vue C411 passe par le VPN : l'application et tes services (qBittorrent, Radarr, Sonarr, Lidarr) ne s'en servent pas. `gluetun` ne publie aucun port et son serveur de contrôle reste sur `127.0.0.1`, à l'intérieur du conteneur. `egress` et `browser` ne démarrent qu'une fois `gluetun` `healthy`.
+
+**Vérifier**
+
+```bash
+docker compose ps                  # gluetun « healthy » (quelques secondes à une minute), puis egress et browser
+docker compose logs gluetun        # « Public IP address is … »
+docker compose exec egress node -e "fetch('https://ipinfo.io/ip').then(r=>r.text()).then(console.log)"
+```
+
+La dernière commande affiche l'adresse publique que voit le reste du monde depuis `egress` : celle du VPN, pas celle de ta connexion. Ouvre ensuite l'onglet C411 ; s'il affiche encore une erreur, `docker compose logs egress` dit pourquoi.
+
+**À savoir**
+
+- **Mise à jour** : `docker compose pull`, puis `docker compose up -d` (gluetun est mis à jour aussi ; Compose recrée alors `egress`, qui vit dans son réseau). Si `gluetun` redémarre seul (`docker restart arr411-gluetun`, par exemple), `egress` reste attaché à l'ancien réseau et la vue C411 n'a plus de sortie : `docker compose restart egress`.
+- **Un autre gluetun chez toi ?** Celui-ci est indépendant (conteneur `arr411-gluetun`, volume `gluetun-data`, qui ne garde que le cache de gluetun). Selon le fournisseur, une clé WireGuard ne sert qu'à un tunnel à la fois : crée une configuration dédiée à Arr411 plutôt que de réutiliser celle de l'autre.
+- **Cloudflare** peut se méfier de certaines adresses de VPN : si la vérification de c411.org boucle, change de pays (`SERVER_COUNTRIES`).
+- Le fuseau horaire (`TZ`) s'applique aussi à gluetun.
+
 ## HTTPS et reverse proxy
 
 Sans HTTPS, les mots de passe et le cookie de session circulent en clair. Utilise HTTP seulement sur un réseau de confiance.
@@ -239,6 +284,7 @@ Toutes sont facultatives et se mettent dans `.env`.
 | `C411_ALLOWED_HOSTS` | — | Sites joignables en plus de c411.org et de la vérification Cloudflare. |
 | `TZ` | `Europe/Paris` | Fuseau horaire du navigateur. |
 | `BROWSER_HEADLESS` | `0` | `1` : Chromium sans écran virtuel (repli). |
+| `VPN_SERVICE_PROVIDER`, `VPN_TYPE`, `WIREGUARD_*`, `OPENVPN_*`, `SERVER_COUNTRIES` | — | Client VPN de `docker-compose.vpn.yml` seulement : voir [C411 derrière un VPN](#c411-derrière-un-vpn-gluetun). |
 
 L'image utilise aussi `PORT` (3000, le port interne du conteneur : celui que tu ouvres est `HOST_PORT`), `HOST` (0.0.0.0) et `DATA_DIR` (`/data`) : inutile d'y toucher.
 
@@ -277,7 +323,7 @@ docker compose up -d
 docker compose logs arr411    # mot de passe de l'administrateur (affiché une seule fois)
 ```
 
-Les réglages se mettent dans un fichier `.env` à côté (le modèle est `.env.example`, dans le dépôt). Les deux fichiers utilisent le même volume : tu peux passer de l'un à l'autre sans perdre tes données.
+Les réglages se mettent dans un fichier `.env` à côté (le modèle est `.env.example`, dans le dépôt). Même chose pour `docker-compose.vpn.yml`, un seul fichier lui aussi, avec le client VPN de la vue C411 : voir [C411 derrière un VPN](#c411-derrière-un-vpn-gluetun). Ces fichiers utilisent le même volume : tu peux passer de l'un à l'autre sans perdre tes données.
 
 Les images sont `ghcr.io/hugomeyer/arr411-web:latest` (l'application, et le proxy de sortie `egress`, qui utilise la même image) et `ghcr.io/hugomeyer/arr411-browser:latest` (le navigateur). Le workflow `.github/workflows/docker.yml` les teste, puis les construit pour amd64 et arm64 et les pousse dans GitHub Container Registry à chaque push sur `main` et à chaque tag `v*`.
 
@@ -327,19 +373,20 @@ En HTTPS (ou sur `localhost`), le navigateur propose d'**installer** Arr411 : me
 
 - Le flux (`/api/c411/ws`) n'est accessible qu'avec une session valide : sans elle, 401 ; avec une origine qui n'est pas celle d'Arr411, 403. Le nombre de tentatives est limité (60 par minute et par adresse, avant même la vérification de la session), ainsi que les vues ouvertes (3 par compte, 50 au total). Seuls des messages JSON valides, de 64 Ko au plus, sont acceptés ; le serveur ne transmet au navigateur que des clics, du défilement et de la saisie qu'il a vérifiés.
 - Le serveur revérifie le compte toutes les 15 secondes : un compte désactivé, supprimé, dont un administrateur change le mot de passe, ou une session déconnectée, ferme la vue (tout de suite quand le changement passe par l'interface).
-- **Le navigateur n'a aucune route directe vers Internet.** `browser` n'est branché qu'à deux réseaux Docker `internal` (sans passerelle) : `c411-control`, partagé avec `arr411` qui le pilote, et `c411-egress`, partagé avec `egress`. Il n'a pas de DNS direct, et Chromium est lancé avec ce proxy comme seule sortie.
+- **Le navigateur n'a aucune route directe vers Internet.** `browser` n'est branché qu'à deux réseaux Docker `internal` (sans passerelle) : `c411-control`, partagé avec `arr411` qui le pilote, et `c411-egress`, partagé avec `egress` (avec le VPN : avec `gluetun`, dont `egress` partage le réseau). Il n'a pas de DNS direct, et Chromium est lancé avec ce proxy comme seule sortie.
 - **`egress` ne relaie que des tunnels HTTPS** (port 443) vers les sites autorisés : c411.org, ses sous-domaines, la vérification Cloudflare et `C411_ALLOWED_HOSTS`. C'est lui qui résout les noms et **refuse toute adresse qui n'est pas publique** (réseaux privés, loopback, link-local, CGNAT) : le navigateur ne peut pas atteindre ton réseau local, ni un service du serveur, par son intermédiaire. Il se connecte à l'adresse qu'il a vérifiée, et journalise ses refus.
 - Dans le navigateur, une navigation vers un site non autorisé est bloquée (« Adresse bloquée »), les téléchargements, les permissions (caméra, micro, position, notifications) et les sélecteurs de fichiers sont refusés. Ce filtre n'est qu'une première barrière : la vraie limite est le réseau ci-dessus.
 - Le script injecté ne tourne que sur c411.org et ses sous-domaines, dans un contexte isolé des scripts du site, et n'envoie rien sans interaction récente dans la vue.
 - Aucun port n'est publié, hormis celui de l'application (et ceux de Caddy si tu l'actives) : ni le port DevTools du navigateur (9223, sans authentification), ni celui du proxy (3128).
-- Durcissement des conteneurs : utilisateur non-root, système de fichiers en lecture seule (hors `/data` et `/tmp`), aucune capacité Linux, `no-new-privileges`. `browser` et `egress` n'ont ni volume, ni secret, ni accès à l'hôte ; leur environnement se limite à ce dont ils ont besoin, et ils sont bornés en mémoire et en processus.
+- Durcissement des conteneurs (hors `gluetun` du compose VPN, voir plus bas) : utilisateur non-root, système de fichiers en lecture seule (hors `/data` et `/tmp`), aucune capacité Linux, `no-new-privileges`. `browser` et `egress` n'ont ni volume, ni secret, ni accès à l'hôte ; leur environnement se limite à ce dont ils ont besoin, et ils sont bornés en mémoire et en processus.
 
 **Ce que ça ne garantit pas**
 
 - Chromium tourne avec `--no-sandbox` (le bac à sable de Chromium n'est pas activé dans ce conteneur sans privilèges) : **la frontière, c'est le conteneur**. Si une faille de Chromium était exploitée par une page, elle resterait dans `browser`, qui n'a ni secret ni accès à l'hôte.
 - Les contextes des utilisateurs sont isolés par Chromium, mais partagent le même processus et le même conteneur. N'invite que des personnes de confiance.
 - Le port DevTools et le proxy ne sont pas publiés, mais ils sont joignables depuis les conteneurs qui partagent un réseau avec eux : `arr411` et `egress`, qui n'exécutent que du code de ce dépôt. Ne branche aucun autre conteneur sur les réseaux `c411-control` et `c411-egress`.
-- `egress` est aussi sur le réseau `default` du compose, comme `arr411` : il peut joindre la page de connexion d'Arr411, comme n'importe quel client, et les autres conteneurs de ce réseau. Ne mets pas d'autres services sensibles dans ce projet compose.
+- `egress` est aussi sur le réseau `default` du compose, comme `arr411` : il peut joindre la page de connexion d'Arr411, comme n'importe quel client, et les autres conteneurs de ce réseau. Ne mets pas d'autres services sensibles dans ce projet compose. Avec le VPN, `egress` partage le réseau de `gluetun`, lui-même sur `default` : même précaution.
+- Avec `docker-compose.vpn.yml`, `gluetun` (image tierce) est le seul conteneur du projet qui garde une capacité Linux (`NET_ADMIN`, avec `/dev/net/tun`) et qui porte un secret : ta clé ou tes identifiants VPN, lisibles par qui administre Docker. Il est aussi sur `c411-egress` : comme `arr411` et le proxy, il joint le port DevTools du navigateur. Garde son image à jour et ne publie aucun port sur lui.
 - Qui administre le serveur peut lire les cookies c411.org gardés dans `/data/c411` et la saisie qui transite par le serveur. N'héberge Arr411 que pour des personnes qui te font confiance.
 - Les adresses des clients (limite des tentatives, journaux) viennent de `X-Forwarded-For` quand `TRUST_PROXY` est activé : si le port de l'application est joignable sans passer par le proxy, quelqu'un peut en choisir une. Publie-le sur `127.0.0.1` (`BIND_ADDRESS`) ou filtre-le avec un pare-feu.
 - Un compte « utilisateur » n'est pas cantonné à un dossier : il peut ajouter un torrent avec le dossier de destination de son choix (côté qBittorrent), déplacer des torrents, rescanner des dossiers et lancer un import manuel. Ne crée de comptes que pour des personnes de confiance.
@@ -377,6 +424,10 @@ Les tests qui pilotent un vrai navigateur (`test/c411-hub.test.js`) sont ignoré
 | C411 : « Session fermée » | Inactivité (`C411_IDLE_MINUTES`) : bouton « Rouvrir ». Avec `C411_PERSIST_COOKIES=true`, tu restes connecté à c411.org. |
 | C411 : « Ouvert ailleurs » | Ton compte a pris le navigateur sur un autre appareil : bouton « Reprendre ici ». |
 | C411 : la vérification Cloudflare boucle | Elle peut refuser un navigateur piloté à distance (voir [Limites](#limites)). Réessaie plus tard. |
+| C411 : `ERR_TUNNEL_CONNECTION_FAILED` | `egress` a refusé le tunnel ou n'a pas pu l'établir : `docker compose logs egress` dit pourquoi. Hôte non autorisé : `C411_ALLOWED_HOSTS`. Nom introuvable ou connexion sans réponse : ton accès à Internet bloque probablement c411.org, passe par un VPN (voir [C411 derrière un VPN](#c411-derrière-un-vpn-gluetun)). |
+| VPN : `required variable VPN_SERVICE_PROVIDER is missing a value` | `VPN_SERVICE_PROVIDER` manque dans `.env`, qui doit être à côté du fichier compose. |
+| VPN : `container arr411-gluetun is unhealthy` | Le tunnel ne se monte pas : `docker compose logs gluetun` (fournisseur, pays ou identifiants refusés ; `/dev/net/tun` absent de la machine). `egress` et `browser` n'attendent que lui. |
+| VPN : la vue C411 n'a plus de sortie après un redémarrage de `gluetun` | `egress` est resté dans l'ancien réseau : `docker compose restart egress`. |
 | C411 : « Action refusée : aucune interaction récente dans la vue C411 » | Un envoi doit suivre un clic ou une frappe dans la vue : recommence en cliquant sur le bouton. |
 
 ## Licence

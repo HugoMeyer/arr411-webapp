@@ -15,6 +15,7 @@ const root = path.join(__dirname, '..');
 const read = (...p) => fs.readFileSync(path.join(root, ...p), 'utf8').replace(/\r\n?/g, '\n');
 
 const compose = read('docker-compose.yml');
+const composeVpn = read('docker-compose.vpn.yml');
 const dockerfile = read('Dockerfile').replace(/\\\n\s*/g, ' ');
 const example = read('.env.example');
 const readme = read('README.md');
@@ -45,6 +46,11 @@ const configVars = new Set([
 const FROM_IMAGE = new Set(['PORT', 'HOST', 'DATA_DIR']);
 // Lues par le compose seulement : TZ et BROWSER_HEADLESS vont au conteneur « browser », BIND_ADDRESS au port publié.
 const COMPOSE_ONLY = new Set(['HOST_PORT', 'BIND_ADDRESS', 'DOMAIN', 'TZ', 'BROWSER_HEADLESS']);
+// Lues par docker-compose.vpn.yml seulement (le client VPN gluetun) : tout le reste de ce compose lit les variables de docker-compose.yml.
+const composeRefs = (text) => new Set(
+  text.split('\n').filter((l) => !l.trim().startsWith('#')).flatMap((l) => [...l.matchAll(/\$\{([A-Z][A-Z0-9_]*)/g)].map((m) => m[1]))
+);
+const VPN_ONLY = new Set([...composeRefs(composeVpn)].filter((v) => !composeRefs(compose).has(v)));
 const userVars = [...configVars].filter((v) => !FROM_IMAGE.has(v));
 
 // « ${NOM:-défaut} » (vide = défaut) ou « ${NOM-défaut} » (le défaut ne sert que si NOM n'est pas définie : vide reste vide).
@@ -62,11 +68,13 @@ for (const l of example.split('\n')) {
   if (m) exampleVars[m[1]] = m[2];
 }
 
-const services = block(compose, 'services:').map((l) => /^ {2}([\w-]+):\s*$/.exec(l)?.[1]).filter(Boolean);
+const serviceNames = (text) => block(text, 'services:').map((l) => /^ {2}([\w-]+):\s*$/.exec(l)?.[1]).filter(Boolean);
+const services = serviceNames(compose);
+const servicesVpn = serviceNames(composeVpn);
 
-// Lignes d'un service (les services sont indentés de 2 espaces) et éléments d'une de ses listes (null si la clé est absente).
-function service(name) {
-  const lines = compose.split('\n');
+// Lignes d'un service d'un compose (les services sont indentés de 2 espaces) et éléments d'une de ses listes (null si la clé est absente).
+function serviceIn(text, name) {
+  const lines = text.split('\n');
   const i = lines.findIndex((l) => new RegExp(`^ {2}${name}:\\s*$`).test(l));
   assert.ok(i >= 0, `service « ${name} » introuvable`);
   const out = [];
@@ -76,6 +84,7 @@ function service(name) {
   }
   return out;
 }
+const service = (name) => serviceIn(compose, name);
 function listOf(lines, key) {
   const i = lines.findIndex((l) => new RegExp(`^ {4}${key}:\\s*$`).test(l));
   if (i < 0) return null;
@@ -88,6 +97,31 @@ function listOf(lines, key) {
   return out;
 }
 const has = (lines, re) => lines.some((l) => re.test(l));
+// « environment: » d'un service : nom → valeur brute.
+function envOf(lines) {
+  const i = lines.findIndex((l) => /^ {4}environment:\s*$/.test(l));
+  const out = {};
+  if (i < 0) return out;
+  for (const l of lines.slice(i + 1)) {
+    const m = /^ {6}([A-Z][A-Z0-9_]*):\s*(.*?)\s*$/.exec(l);
+    if (m) out[m[1]] = m[2];
+    else if (l.trim() && !l.trim().startsWith('#')) break;
+  }
+  return out;
+}
+// Lignes utiles (ni vides ni commentées) d'un bloc de premier niveau : « volumes: », « networks: ».
+function topBlock(text, key) {
+  const lines = text.split('\n');
+  const i = lines.indexOf(`${key}:`);
+  assert.ok(i >= 0, `« ${key}: » introuvable`);
+  const out = [];
+  for (const l of lines.slice(i + 1)) {
+    if (l.trim() && !l.startsWith(' ') && !l.startsWith('#')) break;
+    out.push(l);
+  }
+  return out.filter((l) => l.trim() && !l.trim().startsWith('#'));
+}
+const usefulLines = (lines) => lines.filter((l) => l.trim() && !l.trim().startsWith('#'));
 
 test('config.js, compose et Dockerfile : mêmes variables', () => {
   assert.ok(configVars.size >= 20, 'extraction des variables de config.js');
@@ -105,7 +139,7 @@ test('config.js, compose et Dockerfile : mêmes variables', () => {
 });
 
 test('valeurs par défaut identiques dans le compose, .env.example et le code', () => {
-  assert.deepEqual(Object.keys(exampleVars).sort(), [...userVars, ...COMPOSE_ONLY].sort());
+  assert.deepEqual(Object.keys(exampleVars).sort(), [...userVars, ...COMPOSE_ONLY, ...VPN_ONLY].sort());
   for (const [name, e] of Object.entries(composeEnv)) {
     assert.equal(exampleVars[name], e.dflt, `${name} : défaut différent entre .env.example et le compose`);
   }
@@ -140,7 +174,7 @@ test('valeurs par défaut identiques dans le compose, .env.example et le code', 
 });
 
 test('README : chaque variable est documentée et le tableau ne cite que des variables existantes', () => {
-  const known = new Set([...configVars, ...COMPOSE_ONLY]);
+  const known = new Set([...configVars, ...COMPOSE_ONLY, ...VPN_ONLY]);
   const documented = (v) => readme.includes('`' + v + '`') || readme.includes('`' + v.split('_')[0] + '_*`');
   for (const v of known) assert.ok(documented(v), `${v} n'est pas documentée dans le README`);
 
@@ -171,10 +205,16 @@ test('ports, services et volumes : mêmes valeurs partout', () => {
   assert.equal(to[2], port, 'Caddy vise un autre port');
 
   let commands = 0;
-  for (const [name, text] of [['README', readme], ['compose', compose], ['.env.example', example]]) {
+  const everyService = [...services, ...servicesVpn];
+  for (const [name, text, available] of [
+    ['README', readme, everyService],
+    ['compose', compose, services],
+    ['compose VPN', composeVpn, servicesVpn],
+    ['.env.example', example, everyService]
+  ]) {
     for (const m of text.matchAll(/docker compose (?:exec|logs)(?: -\S+)* ([a-z][\w-]*)/g)) {
       commands++;
-      assert.ok(services.includes(m[1]), `${name} : service inconnu « ${m[1]} »`);
+      assert.ok(available.includes(m[1]), `${name} : service inconnu « ${m[1]} »`);
     }
   }
   assert.ok(commands >= 5, 'commandes docker compose introuvables');
@@ -217,6 +257,113 @@ test('docker-compose.ghcr.yml : le compose du dépôt, avec les images publiées
 
   for (const [image] of matrix) assert.ok(readme.includes(`ghcr.io/${owner}/${image}:latest`), `README : ghcr.io/${owner}/${image}:latest`);
   assert.ok(readme.includes('docker-compose.ghcr.yml'), 'README : compose à partager');
+});
+
+test('docker-compose.vpn.yml : le compose publié avec gluetun, et le proxy de sortie dans le réseau de gluetun', () => {
+  const published = read('docker-compose.ghcr.yml');
+  const svc = (name) => serviceIn(composeVpn, name);
+  const base = (name) => serviceIn(published, name);
+  const same = (name) => assert.deepEqual(usefulLines(svc(name)), usefulLines(base(name)), `${name} : différent de docker-compose.ghcr.yml`);
+
+  // Mêmes services plus gluetun ; arr411 reste le premier (le test des variables lit son bloc « environment: »).
+  // Même nom de projet : mêmes noms de volumes, donc on passe d'un compose à l'autre sans perdre les données.
+  assert.deepEqual([...servicesVpn].sort(), [...services, 'gluetun'].sort());
+  assert.equal(servicesVpn[0], 'arr411');
+  assert.equal(/^name:\s*(\S+)/m.exec(composeVpn)?.[1], /^name:\s*(\S+)/m.exec(published)?.[1], 'nom du projet');
+  same('arr411');
+  same('caddy');
+
+  // browser : le même, mais il joint le proxy par le nom de gluetun, dont egress partage le réseau.
+  const viaEgress = 'EGRESS_PROXY: http://egress:3128';
+  assert.ok(base('browser').some((l) => l.includes(viaEgress)), 'docker-compose.ghcr.yml : EGRESS_PROXY');
+  assert.deepEqual(
+    usefulLines(svc('browser')),
+    usefulLines(base('browser')).map((l) => l.replace(viaEgress, 'EGRESS_PROXY: http://gluetun:3128')),
+    'browser : différent de docker-compose.ghcr.yml, hors EGRESS_PROXY'
+  );
+
+  // egress : le même, mais dans le réseau de gluetun, à la place des réseaux default et c411-egress (donc sans « networks » ni « ports »).
+  const egress = usefulLines(base('egress'));
+  const own = ['    networks:', '      - default', '      - c411-egress'];
+  const at = egress.findIndex((_, i) => own.every((l, k) => egress[i + k] === l));
+  assert.ok(at >= 0, 'docker-compose.ghcr.yml : réseaux d\'egress');
+  assert.deepEqual(
+    usefulLines(svc('egress')),
+    [
+      ...egress.slice(0, at),
+      '    network_mode: "service:gluetun"',
+      '    depends_on:',
+      '      gluetun:',
+      '        condition: service_healthy',
+      ...egress.slice(at + own.length)
+    ],
+    'egress : différent de docker-compose.ghcr.yml, hors réseau'
+  );
+
+  // Volumes : ceux du compose publié et celui de gluetun. Réseaux : les mêmes, tous sans accès à Internet.
+  assert.deepEqual(topBlock(composeVpn, 'volumes'), [...topBlock(published, 'volumes'), '  gluetun-data:']);
+  const networks = topBlock(composeVpn, 'networks');
+  assert.deepEqual(networks, topBlock(published, 'networks'));
+  assert.equal(
+    networks.filter((l) => /^ {4}internal:\s*true\s*$/.test(l)).length,
+    networks.filter((l) => /^ {2}[\w-]+:\s*$/.test(l)).length,
+    'tous les réseaux déclarés doivent être internes'
+  );
+
+  // gluetun : seul à garder une capacité et un accès à /dev/net/tun, aucun port publié, serveur de contrôle dans le conteneur.
+  const g = svc('gluetun');
+  assert.ok(has(g, /^ {4}image:\s*qmcgaw\/gluetun:\S+\s*$/), 'gluetun : image');
+  const container = /^ {4}container_name:\s*(\S+)\s*$/m.exec(g.join('\n'))?.[1];
+  assert.ok(container && container !== 'gluetun', 'gluetun : un nom de conteneur à lui, pour ne pas heurter un gluetun déjà installé');
+  assert.deepEqual(listOf(g, 'cap_add'), ['NET_ADMIN']);
+  assert.deepEqual(listOf(g, 'devices'), ['/dev/net/tun:/dev/net/tun']);
+  assert.deepEqual(listOf(g, 'volumes'), ['gluetun-data:/gluetun']);
+  assert.deepEqual([...listOf(g, 'networks')].sort(), ['c411-egress', 'default']);
+  for (const key of ['ports', 'expose', 'privileged', 'network_mode', 'extra_hosts', 'env_file', 'pid']) {
+    assert.ok(!has(g, new RegExp(`^ {4}${key}:`)), `gluetun : « ${key} » ne doit pas être défini`);
+  }
+  assert.ok(has(g, /^ {4}healthcheck:/) && has(g, /^ {6}start_period:\s*\S+/), 'gluetun : contrôle de santé (egress et browser l\'attendent)');
+  for (const s of servicesVpn.filter((n) => n !== 'gluetun')) {
+    for (const key of ['cap_add', 'devices', 'privileged']) assert.ok(!has(svc(s), new RegExp(`^ {4}${key}:`)), `${s} : « ${key} » est réservé à gluetun`);
+  }
+  for (const s of servicesVpn) assert.equal(listOf(svc(s), 'ports') !== null, s === 'arr411' || s === 'caddy', `${s} : ports publiés`);
+
+  const env = envOf(g);
+  assert.deepEqual(
+    Object.keys(env).sort(),
+    [
+      'HTTP_CONTROL_SERVER_ADDRESS', 'OPENVPN_PASSWORD', 'OPENVPN_USER', 'SERVER_COUNTRIES', 'TZ', 'VPN_SERVICE_PROVIDER',
+      'VPN_TYPE', 'WIREGUARD_ADDRESSES', 'WIREGUARD_GSO', 'WIREGUARD_IMPLEMENTATION', 'WIREGUARD_PRIVATE_KEY'
+    ],
+    'gluetun : variables transmises (ni FIREWALL_*, ni port ouvert)'
+  );
+  assert.deepEqual([...VPN_ONLY].sort(), Object.keys(env).filter((k) => !['HTTP_CONTROL_SERVER_ADDRESS', 'TZ'].includes(k)).sort());
+  assert.equal(env.HTTP_CONTROL_SERVER_ADDRESS, '127.0.0.1:8000', 'le serveur de contrôle de gluetun reste dans le conteneur');
+  assert.ok(/^\$\{VPN_SERVICE_PROVIDER:\?[^}$:#]+\}$/.test(env.VPN_SERVICE_PROVIDER), 'VPN_SERVICE_PROVIDER est obligatoire (gluetun en choisit un tout seul sinon)');
+  for (const [name, value] of Object.entries(env)) {
+    if (name === 'HTTP_CONTROL_SERVER_ADDRESS' || name === 'VPN_SERVICE_PROVIDER') continue;
+    assert.ok(new RegExp(`^\\$\\{${name}:-[^}]*\\}$`).test(value), `gluetun : ${name} doit valoir \${${name}:-défaut}`);
+  }
+
+  // .env.example : mêmes défauts que le compose VPN ; le README et .env.example y renvoient.
+  assert.ok(VPN_ONLY.size >= 8 && VPN_ONLY.has('VPN_SERVICE_PROVIDER') && VPN_ONLY.has('WIREGUARD_PRIVATE_KEY'), 'variables VPN du compose');
+  for (const v of VPN_ONLY) {
+    const m = new RegExp(`\\$\\{${v}(?::-([^}]*)|:\\?[^}]*)?\\}`).exec(composeVpn);
+    assert.ok(m, `${v} : absente du compose VPN`);
+    assert.equal(exampleVars[v], m[1] || '', `${v} : défaut différent entre .env.example et docker-compose.vpn.yml`);
+  }
+  assert.ok(example.includes('docker-compose.vpn.yml'), '.env.example : compose VPN');
+  assert.ok(readme.includes('docker-compose.vpn.yml') && readme.includes('qmcgaw/gluetun'), 'README : compose VPN');
+});
+
+test('README : les liens internes visent un titre existant', () => {
+  // Règle de GitHub : minuscules, ponctuation retirée, espaces remplacés par des tirets. Un bloc de code n'a pas de titres.
+  const text = readme.replace(/^```[\s\S]*?^```/gm, '');
+  const slug = (title) => title.trim().toLowerCase().replace(/[^\p{L}\p{N}\p{M}\s_-]/gu, '').replace(/\s/g, '-');
+  const anchors = new Set([...text.matchAll(/^#{1,6} (.+)$/gm)].map((m) => slug(m[1])));
+  const links = [...text.matchAll(/\]\(#([^)\s]+)\)/g)].map((m) => m[1]);
+  assert.ok(links.length >= 6, 'liens internes du README introuvables');
+  for (const link of links) assert.ok(anchors.has(link), `README : le lien « #${link} » ne vise aucun titre`);
 });
 
 test('workflow : Docker Hub est facultatif, et une pull request ne publie rien', () => {
